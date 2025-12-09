@@ -8,6 +8,84 @@ const isServerless = !!process.env.RENDER || !!process.env.VERCEL || !!process.e
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// API Key Authentication
+const PDF_SERVICE_API_KEY = process.env.PDF_SERVICE_API_KEY;
+if (!PDF_SERVICE_API_KEY) {
+  console.warn('[PDF Service] WARNING: PDF_SERVICE_API_KEY not set. Service is unsecured!');
+}
+
+// Rate limiting store (in-memory, resets on service restart)
+const rateLimitStore = new Map();
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = 10; // 10 requests per minute per IP
+
+// Rate limiting middleware
+function rateLimitMiddleware(req, res, next) {
+  const clientId = req.headers['x-api-key'] || req.ip || 'unknown';
+  const now = Date.now();
+  
+  if (!rateLimitStore.has(clientId)) {
+    rateLimitStore.set(clientId, { count: 1, resetTime: now + RATE_LIMIT_WINDOW });
+    return next();
+  }
+  
+  const limit = rateLimitStore.get(clientId);
+  
+  // Reset if window expired
+  if (now > limit.resetTime) {
+    limit.count = 1;
+    limit.resetTime = now + RATE_LIMIT_WINDOW;
+    return next();
+  }
+  
+  // Check if limit exceeded
+  if (limit.count >= RATE_LIMIT_MAX_REQUESTS) {
+    return res.status(429).json({
+      error: 'Rate limit exceeded',
+      message: `Too many requests. Maximum ${RATE_LIMIT_MAX_REQUESTS} requests per minute.`,
+      retryAfter: Math.ceil((limit.resetTime - now) / 1000),
+    });
+  }
+  
+  limit.count++;
+  next();
+}
+
+// API key authentication middleware
+function apiKeyAuthMiddleware(req, res, next) {
+  // Skip auth for health check
+  if (req.path === '/health') {
+    return next();
+  }
+  
+  // If no API key is configured, allow all requests (development mode)
+  if (!PDF_SERVICE_API_KEY) {
+    return next();
+  }
+  
+  const apiKey = req.headers['x-api-key'];
+  
+  if (!apiKey) {
+    return res.status(401).json({
+      error: 'Unauthorized',
+      message: 'Missing API key. Please provide X-API-Key header.',
+    });
+  }
+  
+  if (apiKey !== PDF_SERVICE_API_KEY) {
+    return res.status(403).json({
+      error: 'Forbidden',
+      message: 'Invalid API key.',
+    });
+  }
+  
+  next();
+}
+
+// Apply middleware
+app.use(apiKeyAuthMiddleware);
+app.use('/render', rateLimitMiddleware);
+
 // Page size constants (in millimeters)
 const PAGE_SIZES = {
   A4: { width: 210, height: 297 },

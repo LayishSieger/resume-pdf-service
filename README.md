@@ -34,16 +34,27 @@ The service will automatically use regular Puppeteer for local development and `
 
 1. Create a new Web Service on Render.com
 2. Connect your repository or deploy from this directory
-3. Set build command: `pnpm install`
+3. Set build command: `npm install -g pnpm && pnpm install`
 4. Set start command: `pnpm start`
 5. Set environment: Node.js
-6. No environment variables required
+6. **Required environment variable:**
+   - `PDF_SERVICE_API_KEY`: A secret API key for authentication (generate a secure random string)
+
+## Security
+
+- **API Key Authentication**: All requests (except `/health`) require an `X-API-Key` header
+- **Rate Limiting**: 10 requests per minute per client (IP or API key)
+- **Note**: Vercel doesn't have fixed IP addresses, so API key authentication is used instead of IP allowlist
 
 ## API
 
 ### POST /render
 
 Generate a PDF from HTML.
+
+**Headers:**
+- `X-API-Key`: Required. Your PDF service API key
+- `Content-Type`: `application/json`
 
 **Request Body:**
 ```json
@@ -57,7 +68,11 @@ Generate a PDF from HTML.
 
 **Response:**
 - Success: PDF file (Content-Type: application/pdf)
-- Error: JSON with error message (status 400 or 500)
+- Error: JSON with error message
+  - `401`: Missing or invalid API key
+  - `429`: Rate limit exceeded
+  - `400`: Invalid request
+  - `500`: Server error
 
 ### GET /health
 
@@ -77,4 +92,6 @@ Health check endpoint.
 - Browser is launched fresh for each request (no caching)
 - 30 second timeout for PDF generation
 - 10MB request body limit
+- Free tier instances spin down after inactivity (adds ~50 seconds to first request)
+- Rate limiting uses in-memory store (resets on service restart)
 
