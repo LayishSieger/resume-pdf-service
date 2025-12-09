@@ -2,7 +2,7 @@ services:
   - type: web
     name: resume-pdf-service
     env: node
-    buildCommand: corepack enable && corepack prepare pnpm@latest --activate && pnpm install
+    buildCommand: npm install -g pnpm && pnpm install
     startCommand: pnpm start
     plan: free
     envVars:
