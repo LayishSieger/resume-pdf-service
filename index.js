@@ -8,6 +8,21 @@ const isServerless = !!process.env.RENDER || !!process.env.VERCEL || !!process.e
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// Request logging middleware for debugging (after JSON parser)
+app.use((req, res, next) => {
+  if (req.path === '/render') {
+    console.log('[PDF Service] Request received:', {
+      method: req.method,
+      path: req.path,
+      contentType: req.headers['content-type'],
+      hasBody: !!req.body,
+      bodyType: typeof req.body,
+      bodyKeys: req.body ? Object.keys(req.body) : [],
+    });
+  }
+  next();
+});
+
 // API Key Authentication
 const PDF_SERVICE_API_KEY = process.env.PDF_SERVICE_API_KEY;
 if (!PDF_SERVICE_API_KEY) {
@@ -364,8 +379,21 @@ app.post('/render', async (req, res) => {
     // Validate request
     const { html, templateId, previewViewMode, previewPageSize } = req.body;
     
+    console.log('[PDF Service] Received request:', {
+      hasHtml: !!html,
+      htmlLength: html?.length || 0,
+      templateId,
+      previewViewMode,
+      previewPageSize,
+      bodyKeys: Object.keys(req.body || {}),
+    });
+    
     if (!html) {
-      return res.status(400).json({ error: 'Missing required field: html' });
+      console.error('[PDF Service] Missing HTML field in request body');
+      return res.status(400).json({ 
+        error: 'Missing required field: html',
+        message: 'The request body must include an "html" field with the HTML content to convert to PDF.'
+      });
     }
     
     const viewMode = previewViewMode || 'page';
