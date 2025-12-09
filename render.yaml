@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: resume-pdf-service
+    env: node
+    buildCommand: pnpm install
+    startCommand: pnpm start
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /health
+
