@@ -8,12 +8,15 @@
     "dev": "node index.js"
   },
   "dependencies": {
-    "@sparticuz/chromium": "^143.0.0",
     "express": "^4.18.2",
-    "puppeteer": "^24.32.1",
-    "puppeteer-core": "^24.23.1"
+    "puppeteer-core": "^24.23.1",
+    "@sparticuz/chromium": "^143.0.0"
+  },
+  "devDependencies": {
+    "puppeteer": "^24.32.1"
   },
   "engines": {
     "node": ">=18.0.0"
   }
 }
+
