@@ -191,7 +191,9 @@ async function applyPreviewPaginationBreaks(page, pageSize, templateId, pagePadd
     left: Number.isFinite(pagePaddingMm?.left) ? pagePaddingMm.left : 10,
   };
   const verticalPadding = resolvedPadding.top + resolvedPadding.bottom;
-  const horizontalPadding = resolvedPadding.left + resolvedPadding.right;
+  // Match app preview/export geometry: width uses the canonical "double horizontal"
+  // calculation while page wrappers still render with 10mm visual padding per side.
+  const horizontalPadding = (resolvedPadding.left + resolvedPadding.right) * 2;
   const usableHeightPx = (dimensions.height - verticalPadding) * 3.779;
   const usableWidthPx = (dimensions.width - horizontalPadding) * 3.779;
   const editorClasses = `ProseMirror tiptap-editor preview-mode template-${templateId || 'classic'}`;
@@ -530,7 +532,9 @@ app.post('/render', async (req, res) => {
     
     // Set viewport to match page width (important for accurate text wrapping)
     const dimensions = getPageDimensions(pageSize);
-    const horizontalPadding = resolvedPagePaddingMm.left + resolvedPagePaddingMm.right;
+    // Keep viewport math aligned with app pdf-generator.ts and smart-page-splitter.ts.
+    const horizontalPadding =
+      (resolvedPagePaddingMm.left + resolvedPagePaddingMm.right) * 2;
     const verticalPadding = resolvedPagePaddingMm.top + resolvedPagePaddingMm.bottom;
     const pageWidthPx = ((dimensions.width - horizontalPadding) * 3.779);
     const pageHeightPx = ((dimensions.height - verticalPadding) * 3.779);
