@@ -182,15 +182,22 @@ async function measureContentHeight(page) {
 }
 
 // Apply page breaks using preview-style unit pagination.
-async function applyPreviewPaginationBreaks(page, pageSize, templateId) {
+async function applyPreviewPaginationBreaks(page, pageSize, templateId, marginMm) {
   const dimensions = getPageDimensions(pageSize);
-  const padding = 20;
-  const usableHeightPx = (dimensions.height - padding) * 3.779;
-  const usableWidthPx = (dimensions.width - padding * 2) * 3.779;
+  const resolvedMargin = {
+    top: Number.isFinite(marginMm?.top) ? marginMm.top : 10,
+    right: Number.isFinite(marginMm?.right) ? marginMm.right : 10,
+    bottom: Number.isFinite(marginMm?.bottom) ? marginMm.bottom : 10,
+    left: Number.isFinite(marginMm?.left) ? marginMm.left : 10,
+  };
+  const verticalPadding = resolvedMargin.top + resolvedMargin.bottom;
+  const horizontalPadding = resolvedMargin.left + resolvedMargin.right;
+  const usableHeightPx = (dimensions.height - verticalPadding) * 3.779;
+  const usableWidthPx = (dimensions.width - horizontalPadding) * 3.779;
   const editorClasses = `ProseMirror tiptap-editor preview-mode template-${templateId || 'classic'}`;
   const SMALL_BLOCK_RATIO = 0.25;
   
-  await page.evaluate(({ usableHeightPx, usableWidthPx, editorClasses, SMALL_BLOCK_RATIO, dimensions }) => {
+  await page.evaluate(({ usableHeightPx, usableWidthPx, editorClasses, SMALL_BLOCK_RATIO, dimensions, resolvedMargin }) => {
     const container = document.querySelector('.resume-container');
     if (!container) return;
 
@@ -200,6 +207,11 @@ async function applyPreviewPaginationBreaks(page, pageSize, templateId) {
       '.pages-container.export-pages-container',
     );
     if (exportPagesContainer && exportPagesContainer.querySelector('.export-page')) {
+      // Keep existing pre-paginated pages consistent with requested margin contract.
+      const existingPages = exportPagesContainer.querySelectorAll('.export-page');
+      existingPages.forEach((pageEl) => {
+        pageEl.style.padding = `${resolvedMargin.top}mm ${resolvedMargin.right}mm ${resolvedMargin.bottom}mm ${resolvedMargin.left}mm`;
+      });
       return;
     }
     
@@ -334,7 +346,7 @@ async function applyPreviewPaginationBreaks(page, pageSize, templateId) {
       pageEl.style.maxHeight = `${dimensions.height}mm`;
       pageEl.style.boxSizing = 'border-box';
       pageEl.style.overflow = 'hidden';
-      pageEl.style.padding = '10mm';
+      pageEl.style.padding = `${resolvedMargin.top}mm ${resolvedMargin.right}mm ${resolvedMargin.bottom}mm ${resolvedMargin.left}mm`;
       pageEl.style.borderRadius = '0';
       pageEl.style.boxShadow = 'none';
       pageEl.style.background = 'white';
@@ -429,6 +441,7 @@ async function applyPreviewPaginationBreaks(page, pageSize, templateId) {
     editorClasses,
     SMALL_BLOCK_RATIO,
     dimensions,
+    resolvedMargin,
   });
 }
 
@@ -510,9 +523,10 @@ app.post('/render', async (req, res) => {
     
     // Set viewport to match page width (important for accurate text wrapping)
     const dimensions = getPageDimensions(pageSize);
-    const padding = 20; // 20mm total, 10mm per side
-    const pageWidthPx = ((dimensions.width - padding * 2) * 3.779);
-    const pageHeightPx = ((dimensions.height - padding) * 3.779);
+    const horizontalPadding = resolvedMarginMm.left + resolvedMarginMm.right;
+    const verticalPadding = resolvedMarginMm.top + resolvedMarginMm.bottom;
+    const pageWidthPx = ((dimensions.width - horizontalPadding) * 3.779);
+    const pageHeightPx = ((dimensions.height - verticalPadding) * 3.779);
     
     console.log('[PDF Service] Setting viewport size:', {
       pageSize,
@@ -662,7 +676,12 @@ app.post('/render', async (req, res) => {
       // Wait one more time after forcing reflow
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      await applyPreviewPaginationBreaks(page, pageSize, templateId);
+      await applyPreviewPaginationBreaks(
+        page,
+        pageSize,
+        templateId,
+        resolvedMarginMm,
+      );
       
       pdfOptions = {
         format: pageSize === 'A4' ? 'A4' : undefined,
