@@ -182,22 +182,22 @@ async function measureContentHeight(page) {
 }
 
 // Apply page breaks using preview-style unit pagination.
-async function applyPreviewPaginationBreaks(page, pageSize, templateId, marginMm) {
+async function applyPreviewPaginationBreaks(page, pageSize, templateId, pagePaddingMm) {
   const dimensions = getPageDimensions(pageSize);
-  const resolvedMargin = {
-    top: Number.isFinite(marginMm?.top) ? marginMm.top : 10,
-    right: Number.isFinite(marginMm?.right) ? marginMm.right : 10,
-    bottom: Number.isFinite(marginMm?.bottom) ? marginMm.bottom : 10,
-    left: Number.isFinite(marginMm?.left) ? marginMm.left : 10,
+  const resolvedPadding = {
+    top: Number.isFinite(pagePaddingMm?.top) ? pagePaddingMm.top : 10,
+    right: Number.isFinite(pagePaddingMm?.right) ? pagePaddingMm.right : 10,
+    bottom: Number.isFinite(pagePaddingMm?.bottom) ? pagePaddingMm.bottom : 10,
+    left: Number.isFinite(pagePaddingMm?.left) ? pagePaddingMm.left : 10,
   };
-  const verticalPadding = resolvedMargin.top + resolvedMargin.bottom;
-  const horizontalPadding = resolvedMargin.left + resolvedMargin.right;
+  const verticalPadding = resolvedPadding.top + resolvedPadding.bottom;
+  const horizontalPadding = resolvedPadding.left + resolvedPadding.right;
   const usableHeightPx = (dimensions.height - verticalPadding) * 3.779;
   const usableWidthPx = (dimensions.width - horizontalPadding) * 3.779;
   const editorClasses = `ProseMirror tiptap-editor preview-mode template-${templateId || 'classic'}`;
   const SMALL_BLOCK_RATIO = 0.25;
   
-  await page.evaluate(({ usableHeightPx, usableWidthPx, editorClasses, SMALL_BLOCK_RATIO, dimensions, resolvedMargin }) => {
+  await page.evaluate(({ usableHeightPx, usableWidthPx, editorClasses, SMALL_BLOCK_RATIO, dimensions, resolvedPadding }) => {
     const container = document.querySelector('.resume-container');
     if (!container) return;
 
@@ -210,7 +210,7 @@ async function applyPreviewPaginationBreaks(page, pageSize, templateId, marginMm
       // Keep existing pre-paginated pages consistent with requested margin contract.
       const existingPages = exportPagesContainer.querySelectorAll('.export-page');
       existingPages.forEach((pageEl) => {
-        pageEl.style.padding = `${resolvedMargin.top}mm ${resolvedMargin.right}mm ${resolvedMargin.bottom}mm ${resolvedMargin.left}mm`;
+        pageEl.style.padding = `${resolvedPadding.top}mm ${resolvedPadding.right}mm ${resolvedPadding.bottom}mm ${resolvedPadding.left}mm`;
       });
       return;
     }
@@ -346,7 +346,7 @@ async function applyPreviewPaginationBreaks(page, pageSize, templateId, marginMm
       pageEl.style.maxHeight = `${dimensions.height}mm`;
       pageEl.style.boxSizing = 'border-box';
       pageEl.style.overflow = 'hidden';
-      pageEl.style.padding = `${resolvedMargin.top}mm ${resolvedMargin.right}mm ${resolvedMargin.bottom}mm ${resolvedMargin.left}mm`;
+      pageEl.style.padding = `${resolvedPadding.top}mm ${resolvedPadding.right}mm ${resolvedPadding.bottom}mm ${resolvedPadding.left}mm`;
       pageEl.style.borderRadius = '0';
       pageEl.style.boxShadow = 'none';
       pageEl.style.background = 'white';
@@ -441,7 +441,7 @@ async function applyPreviewPaginationBreaks(page, pageSize, templateId, marginMm
     editorClasses,
     SMALL_BLOCK_RATIO,
     dimensions,
-    resolvedMargin,
+    resolvedPadding,
   });
 }
 
@@ -457,7 +457,7 @@ app.post('/render', async (req, res) => {
   
   try {
     // Validate request
-    const { html, templateId, previewViewMode, previewPageSize, marginMm } = req.body;
+    const { html, templateId, previewViewMode, previewPageSize, marginMm, pagePaddingMm } = req.body;
     
     if (!html) {
       return res.status(400).json({ error: 'Missing required field: html' });
@@ -471,12 +471,19 @@ app.post('/render', async (req, res) => {
       bottom: Number.isFinite(marginMm?.bottom) ? marginMm.bottom : 10,
       left: Number.isFinite(marginMm?.left) ? marginMm.left : 10,
     };
+    const resolvedPagePaddingMm = {
+      top: Number.isFinite(pagePaddingMm?.top) ? pagePaddingMm.top : 10,
+      right: Number.isFinite(pagePaddingMm?.right) ? pagePaddingMm.right : 10,
+      bottom: Number.isFinite(pagePaddingMm?.bottom) ? pagePaddingMm.bottom : 10,
+      left: Number.isFinite(pagePaddingMm?.left) ? pagePaddingMm.left : 10,
+    };
     
     console.log('[PDF Service] Starting PDF generation:', {
       templateId,
       viewMode,
       pageSize,
       marginMm: resolvedMarginMm,
+      pagePaddingMm: resolvedPagePaddingMm,
       htmlLength: html.length,
     });
     
@@ -523,8 +530,8 @@ app.post('/render', async (req, res) => {
     
     // Set viewport to match page width (important for accurate text wrapping)
     const dimensions = getPageDimensions(pageSize);
-    const horizontalPadding = resolvedMarginMm.left + resolvedMarginMm.right;
-    const verticalPadding = resolvedMarginMm.top + resolvedMarginMm.bottom;
+    const horizontalPadding = resolvedPagePaddingMm.left + resolvedPagePaddingMm.right;
+    const verticalPadding = resolvedPagePaddingMm.top + resolvedPagePaddingMm.bottom;
     const pageWidthPx = ((dimensions.width - horizontalPadding) * 3.779);
     const pageHeightPx = ((dimensions.height - verticalPadding) * 3.779);
     
@@ -680,7 +687,7 @@ app.post('/render', async (req, res) => {
         page,
         pageSize,
         templateId,
-        resolvedMarginMm,
+        resolvedPagePaddingMm,
       );
       
       pdfOptions = {
