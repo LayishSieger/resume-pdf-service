@@ -181,173 +181,255 @@ async function measureContentHeight(page) {
   return finalHeight;
 }
 
-// Log measurements for page mode
-async function logPDFMeasurements(page, pageSize) {
+// Apply page breaks using preview-style unit pagination.
+async function applyPreviewPaginationBreaks(page, pageSize, templateId) {
   const dimensions = getPageDimensions(pageSize);
-  const padding = 20; // 20mm total, 10mm per side
-  const usableHeight = dimensions.height - padding;
-  const A4_HEIGHT_PX = usableHeight * 3.779;
-  const A4_WIDTH_PX = (dimensions.width - padding * 2) * 3.779;
+  const padding = 20;
+  const usableHeightPx = (dimensions.height - padding) * 3.779;
+  const usableWidthPx = (dimensions.width - padding * 2) * 3.779;
+  const editorClasses = `ProseMirror tiptap-editor preview-mode template-${templateId || 'classic'}`;
+  const SMALL_BLOCK_RATIO = 0.25;
   
-  const measurements = await page.evaluate(async ({ A4_HEIGHT_PX, A4_WIDTH_PX }) => {
-    const container = document.querySelector('.resume-container');
-    if (!container) return null;
-    
-    const containerEl = container;
-    const sections = Array.from(containerEl.querySelectorAll('.resume-section'));
-    
-    const sectionData = await Promise.all(sections.map(async (section, index) => {
-      const sectionEl = section;
-      const header = sectionEl.querySelector('h2');
-      const headerHeight = header ? Math.max(header.scrollHeight, header.offsetHeight) : 0;
-      const sectionName = header?.textContent?.trim() || `Section ${index + 1}`;
-      
-      // Get all items in section
-      const items = [];
-      const itemSelectors = [
-        '.experience-item',
-        '.education-item',
-        '.project-item',
-        '.certificate-item',
-        '.skill-item'
-      ];
-      
-      for (const selector of itemSelectors) {
-        const sectionItems = Array.from(sectionEl.querySelectorAll(selector));
-        items.push(...sectionItems);
-      }
-      
-      // Force reflow for each item before measuring
-      for (let i = 0; i < 3; i++) {
-        items.forEach(item => {
-          void item.offsetHeight;
-          void item.scrollHeight;
-          void item.getBoundingClientRect();
-        });
-        if (i < 2) {
-          await new Promise(resolve => setTimeout(resolve, 20));
-        }
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 50));
-      
-      // Measure each item individually
-      const itemHeights = [];
-      for (let idx = 0; idx < items.length; idx++) {
-        const item = items[idx];
-        
-        void item.offsetHeight;
-        void item.scrollHeight;
-        void item.getBoundingClientRect();
-        
-        await new Promise(resolve => setTimeout(resolve, 10));
-        
-        void item.offsetHeight;
-        void item.scrollHeight;
-        void item.getBoundingClientRect();
-        
-        await new Promise(resolve => setTimeout(resolve, 5));
-        
-        void item.offsetHeight;
-        void item.scrollHeight;
-        
-        const scrollHeight = item.scrollHeight;
-        const offsetHeight = item.offsetHeight;
-        const height = Math.max(scrollHeight, offsetHeight);
-        
-        itemHeights.push(height);
-      }
-      
-      // Include margins in measurement
-      const computedStyle = window.getComputedStyle(sectionEl);
-      const marginTop = parseFloat(computedStyle.marginTop) || 0;
-      const marginBottom = parseFloat(computedStyle.marginBottom) || 0;
-      const contentHeight = Math.max(
-        sectionEl.scrollHeight,
-        sectionEl.offsetHeight
-      );
-      const totalSectionHeight = contentHeight + marginTop + marginBottom;
-      
-      return {
-        index,
-        sectionName,
-        totalSectionHeight,
-        headerHeight,
-        itemHeights,
-        itemCount: items.length,
-      };
-    }));
-    
-    const header = containerEl.querySelector('.resume-header');
-    const headerHeight = header ? Math.max(header.scrollHeight, header.offsetHeight) : 0;
-    
-    return {
-      pageHeight: A4_HEIGHT_PX,
-      pageWidth: A4_WIDTH_PX,
-      headerHeight,
-      sections: sectionData,
-      totalContentHeight: Math.max(
-        containerEl.scrollHeight,
-        containerEl.offsetHeight
-      ),
-    };
-  }, { A4_HEIGHT_PX, A4_WIDTH_PX });
-  
-  if (measurements) {
-    console.log('[PDF Service] Page measurements:', {
-      pageHeight: measurements.pageHeight,
-      pageWidth: measurements.pageWidth,
-      headerHeight: measurements.headerHeight,
-      totalContentHeight: measurements.totalContentHeight,
-      sectionsCount: measurements.sections.length,
-    });
-  }
-  
-  return measurements;
-}
-
-// Apply page breaks based on measurements
-async function applyPageBreaks(page, measurementData, pageSize) {
-  const dimensions = getPageDimensions(pageSize);
-  const padding = 20; // 20mm total, 10mm per side
-  const usableHeight = dimensions.height - padding;
-  const A4_HEIGHT_PX = usableHeight * 3.779;
-  
-  await page.evaluate(({ A4_HEIGHT_PX, sections, headerHeight }) => {
+  await page.evaluate(({ usableHeightPx, usableWidthPx, editorClasses, SMALL_BLOCK_RATIO, dimensions }) => {
     const container = document.querySelector('.resume-container');
     if (!container) return;
+
+    // If the incoming HTML is already pre-paginated (app generated .pages-container/.export-page),
+    // we skip pagination to avoid duplicating work and drifting page layout.
+    const exportPagesContainer = document.querySelector(
+      '.pages-container.export-pages-container',
+    );
+    if (exportPagesContainer && exportPagesContainer.querySelector('.export-page')) {
+      return;
+    }
     
     const containerEl = container;
-    const sectionElements = Array.from(containerEl.querySelectorAll('.resume-section'));
+    const blocks = Array.from(containerEl.children);
+    if (blocks.length === 0) return;
     
-    let currentHeight = headerHeight;
+    const isHeading = (el) => /^H[1-6]$/.test(el.tagName.toUpperCase());
     
-    for (let i = 0; i < sections.length && i < sectionElements.length; i++) {
-      const section = sections[i];
-      const sectionEl = sectionElements[i];
-      
-      if (!section || !sectionEl) continue;
-      
-      const sectionHeight = section.totalSectionHeight;
-      const testHeight = currentHeight + sectionHeight;
-      
-      // Rule 1: Section fits entirely - keep it on current page
-      if (testHeight <= A4_HEIGHT_PX && section.itemCount > 0) {
-        currentHeight = testHeight;
+    const measureHeightLikePreview = (element, containerWidthPx, cssClasses) => {
+      if (element.isConnected && element.parentElement) {
+        const parentWidth = element.parentElement.getBoundingClientRect().width;
+        if (Math.abs(parentWidth - containerWidthPx) < 10) {
+          void element.offsetHeight;
+          const directHeight = element.scrollHeight || element.offsetHeight;
+          if (directHeight > 0) {
+            return directHeight;
+          }
+        }
+      }
+
+      const tempContainer = document.createElement('div');
+      tempContainer.style.width = `${containerWidthPx}px`;
+      tempContainer.style.position = 'absolute';
+      tempContainer.style.visibility = 'hidden';
+      tempContainer.style.top = '-9999px';
+      tempContainer.style.left = '-9999px';
+      tempContainer.style.boxSizing = 'border-box';
+
+      const editorContainer = document.createElement('div');
+      editorContainer.className = 'tiptap-editor-container';
+      editorContainer.style.width = '100%';
+      editorContainer.style.boxSizing = 'border-box';
+
+      const wrapper = document.createElement('div');
+      wrapper.style.width = '100%';
+      wrapper.style.boxSizing = 'border-box';
+      wrapper.style.minHeight = '0';
+      wrapper.style.height = 'auto';
+      if (cssClasses) {
+        wrapper.className = cssClasses;
+      }
+
+      const cloned = element.cloneNode(true);
+      wrapper.appendChild(cloned);
+      editorContainer.appendChild(wrapper);
+      tempContainer.appendChild(editorContainer);
+      document.body.appendChild(tempContainer);
+
+      void tempContainer.offsetHeight;
+      void wrapper.offsetHeight;
+      void cloned.offsetHeight;
+
+      const measuredHeight = cloned.scrollHeight || cloned.offsetHeight;
+      tempContainer.remove();
+      return measuredHeight;
+    };
+
+    const measureUnit = (elements) => {
+      const wrapper = document.createElement('div');
+      for (const el of elements) {
+        wrapper.appendChild(el.cloneNode(true));
+      }
+      return measureHeightLikePreview(wrapper, usableWidthPx, editorClasses);
+    };
+
+    const splitOversizedDomBlock = (block, maxChunkHeightPx) => {
+      if (block.children.length < 2) return null;
+      if (block.getBoundingClientRect().height < usableHeightPx * 0.45) {
+        return null;
+      }
+
+      const childNodes = Array.from(block.children);
+      const chunks = [];
+      let currentChunk = block.cloneNode(false);
+      let hasAny = false;
+
+      for (const child of childNodes) {
+        const testChunk = currentChunk.cloneNode(true);
+        testChunk.appendChild(child.cloneNode(true));
+        const testHeight = measureUnit([testChunk]);
+
+        if (testHeight <= maxChunkHeightPx) {
+          currentChunk.appendChild(child.cloneNode(true));
+          hasAny = true;
+          continue;
+        }
+
+        if (!hasAny) {
+          return null;
+        }
+
+        chunks.push(currentChunk);
+        currentChunk = block.cloneNode(false);
+        currentChunk.appendChild(child.cloneNode(true));
+        hasAny = true;
+      }
+
+      if (currentChunk.children.length > 0) {
+        chunks.push(currentChunk);
+      }
+
+      return chunks.length > 1 ? chunks : null;
+    };
+
+    let units = [];
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i];
+      const next = blocks[i + 1];
+
+      if (isHeading(block) && next) {
+        const nextHeight = measureUnit([next]);
+        if (nextHeight <= usableHeightPx * SMALL_BLOCK_RATIO) {
+          const pair = [block, next];
+          units.push({ elements: pair, height: measureUnit(pair) });
+          i++;
+          continue;
+        }
+      }
+
+      units.push({ elements: [block], height: measureUnit([block]) });
+    }
+
+    const createNewPage = () => {
+      const pageEl = document.createElement('div');
+      pageEl.className = 'page paginated export-page';
+      pageEl.style.width = `${dimensions.width}mm`;
+      pageEl.style.height = `${dimensions.height}mm`;
+      pageEl.style.minWidth = `${dimensions.width}mm`;
+      pageEl.style.maxWidth = `${dimensions.width}mm`;
+      pageEl.style.minHeight = `${dimensions.height}mm`;
+      pageEl.style.maxHeight = `${dimensions.height}mm`;
+      pageEl.style.boxSizing = 'border-box';
+      pageEl.style.overflow = 'hidden';
+      pageEl.style.padding = '10mm';
+      pageEl.style.borderRadius = '0';
+      pageEl.style.boxShadow = 'none';
+      pageEl.style.background = 'white';
+      pageEl.style.margin = '0';
+
+      const proseMirror = document.createElement('div');
+      proseMirror.className = editorClasses;
+      proseMirror.style.width = '100%';
+      proseMirror.style.height = 'auto';
+      proseMirror.style.minHeight = '100%';
+      proseMirror.style.padding = '0';
+      proseMirror.style.margin = '0';
+      proseMirror.style.boxSizing = 'border-box';
+      pageEl.appendChild(proseMirror);
+
+      return { page: pageEl, contentParent: proseMirror };
+    };
+
+    const pagesContainer = document.createElement('div');
+    pagesContainer.className = 'pages-container export-pages-container';
+    pagesContainer.style.display = 'flex';
+    pagesContainer.style.flexDirection = 'column';
+    pagesContainer.style.alignItems = 'stretch';
+    pagesContainer.style.gap = '0';
+    pagesContainer.style.background = 'white';
+
+    let current = createNewPage();
+    let currentHeight = 0;
+    let i = 0;
+
+    while (i < units.length) {
+      const unit = units[i];
+
+      if (currentHeight + unit.height <= usableHeightPx) {
+        for (const el of unit.elements) {
+          current.contentParent.appendChild(el.cloneNode(true));
+        }
+        currentHeight += unit.height;
+        i++;
         continue;
       }
-      
-      // Rule 2: Section doesn't fit - add page break before it
-      if (testHeight > A4_HEIGHT_PX && currentHeight > 0) {
-        sectionEl.style.pageBreakBefore = 'always';
-        sectionEl.style.breakBefore = 'page';
-        currentHeight = sectionHeight;
-        console.log(`[PDF Service] Added page break before section "${section.sectionName}" (height: ${currentHeight} + ${sectionHeight} = ${testHeight} > ${A4_HEIGHT_PX})`);
-      } else {
-        currentHeight = testHeight;
+
+      if (unit.elements.length === 1) {
+        const remainingHeight = usableHeightPx - currentHeight;
+        const splitTargetHeight = currentHeight > 0 ? remainingHeight : usableHeightPx;
+        const split = splitOversizedDomBlock(unit.elements[0], splitTargetHeight);
+        if (split) {
+          units.splice(
+            i,
+            1,
+            ...split.map((chunk) => ({
+              elements: [chunk],
+              height: measureUnit([chunk]),
+            }))
+          );
+          continue;
+        }
       }
+
+      if (currentHeight === 0) {
+        for (const el of unit.elements) {
+          current.contentParent.appendChild(el.cloneNode(true));
+        }
+        currentHeight = unit.height;
+        i++;
+        continue;
+      }
+
+      if (current.contentParent.children.length > 0) {
+        pagesContainer.appendChild(current.page);
+      }
+      current = createNewPage();
+      currentHeight = 0;
     }
-  }, { A4_HEIGHT_PX, sections: measurementData.sections, headerHeight: measurementData.headerHeight });
+
+    if (current.contentParent.children.length > 0) {
+      pagesContainer.appendChild(current.page);
+    }
+
+    if (pagesContainer.children.length === 0) {
+      const empty = createNewPage();
+      pagesContainer.appendChild(empty.page);
+    }
+
+    const exportRoot = containerEl.closest('.tiptap-editor-container') || containerEl;
+    if (exportRoot.parentElement) {
+      exportRoot.parentElement.replaceChild(pagesContainer, exportRoot);
+    }
+  }, {
+    usableHeightPx,
+    usableWidthPx,
+    editorClasses,
+    SMALL_BLOCK_RATIO,
+    dimensions,
+  });
 }
 
 // Health check endpoint
@@ -362,7 +444,7 @@ app.post('/render', async (req, res) => {
   
   try {
     // Validate request
-    const { html, templateId, previewViewMode, previewPageSize } = req.body;
+    const { html, templateId, previewViewMode, previewPageSize, marginMm } = req.body;
     
     if (!html) {
       return res.status(400).json({ error: 'Missing required field: html' });
@@ -370,11 +452,18 @@ app.post('/render', async (req, res) => {
     
     const viewMode = previewViewMode || 'page';
     const pageSize = previewPageSize || 'A4';
+    const resolvedMarginMm = {
+      top: Number.isFinite(marginMm?.top) ? marginMm.top : 10,
+      right: Number.isFinite(marginMm?.right) ? marginMm.right : 10,
+      bottom: Number.isFinite(marginMm?.bottom) ? marginMm.bottom : 10,
+      left: Number.isFinite(marginMm?.left) ? marginMm.left : 10,
+    };
     
     console.log('[PDF Service] Starting PDF generation:', {
       templateId,
       viewMode,
       pageSize,
+      marginMm: resolvedMarginMm,
       htmlLength: html.length,
     });
     
@@ -573,13 +662,7 @@ app.post('/render', async (req, res) => {
       // Wait one more time after forcing reflow
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      // Log measurements for comparison with preview
-      const measurementData = await logPDFMeasurements(page, pageSize);
-      
-      // Apply page breaks based on measurements
-      if (measurementData) {
-        await applyPageBreaks(page, measurementData, pageSize);
-      }
+      await applyPreviewPaginationBreaks(page, pageSize, templateId);
       
       pdfOptions = {
         format: pageSize === 'A4' ? 'A4' : undefined,
@@ -587,10 +670,10 @@ app.post('/render', async (req, res) => {
         height: pageSize === 'US Letter' ? `${dimensions.height}mm` : undefined,
         printBackground: true,
         margin: {
-          top: '10mm',
-          right: '10mm',
-          bottom: '10mm',
-          left: '10mm',
+          top: `${resolvedMarginMm.top}mm`,
+          right: `${resolvedMarginMm.right}mm`,
+          bottom: `${resolvedMarginMm.bottom}mm`,
+          left: `${resolvedMarginMm.left}mm`,
         },
         preferCSSPageSize: true,
       };
@@ -616,10 +699,10 @@ app.post('/render', async (req, res) => {
         height: `${heightMm}mm`,
         printBackground: true,
         margin: {
-          top: '10mm',
-          right: '10mm',
-          bottom: '10mm',
-          left: '10mm',
+          top: `${resolvedMarginMm.top}mm`,
+          right: `${resolvedMarginMm.right}mm`,
+          bottom: `${resolvedMarginMm.bottom}mm`,
+          left: `${resolvedMarginMm.left}mm`,
         },
         preferCSSPageSize: false,
       };
